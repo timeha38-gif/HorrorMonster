@@ -1,0 +1,1170 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<title>НЕ ОГЛЯДЫВАЙСЯ</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #000;
+    overflow: hidden;
+    font-family: 'Courier New', monospace;
+    cursor: crosshair;
+    user-select: none;
+  }
+  #game {
+    display: block;
+    margin: 0 auto;
+    background: #000;
+    image-rendering: pixelated;
+  }
+  #hint {
+    position: fixed;
+    bottom: 10px;
+    width: 100%;
+    text-align: center;
+    color: #666;
+    font-size: 13px;
+    pointer-events: none;
+  }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<div id="hint">WASD — движение · SHIFT — бег · МЫШЬ — фонарь · R — рестарт</div>
+
+<script>
+// ================== НАСТРОЙКИ ==================
+const MAP_W = 1800, MAP_H = 1200;
+const W = 1000, H = 700;
+
+// 🧹 Параметры автоочистки частиц
+const BLOOD_LIFETIME = 60 * 1000;    // ⏱ 60 секунд — жизнь частицы
+const BLOOD_FADE_TIME = 10 * 1000;   // ⏱ последние 10 сек — плавное затухание
+const BLOOD_MAX = 400;               // 🔒 максимум частиц одновременно
+const BLOOD_CLEANUP_INTERVAL = 500;  // ⚡ чистим не чаще раза в 0.5 сек
+
+const canvas = document.getElementById('game');
+const ctx = canvas.getContext('2d');
+canvas.width = W;
+canvas.height = H;
+
+function fit() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width = (W * scale) + 'px';
+  canvas.style.height = (H * scale) + 'px';
+}
+window.addEventListener('resize', fit); fit();
+
+// ================== ВВОД ==================
+const keys = {};
+const mouse = { x: W/2, y: H/2 };
+
+window.addEventListener('keydown', e => {
+  keys[e.key.toLowerCase()] = true;
+  if (e.key === ' ' || e.key.startsWith('Arrow')) e.preventDefault();
+  if (e.key.toLowerCase() === 'r' && gameOver) reset();
+});
+window.addEventListener('keyup', e => keys[e.key.toLowerCase()] = false);
+canvas.addEventListener('mousemove', e => {
+  const r = canvas.getBoundingClientRect();
+  mouse.x = (e.clientX - r.left) * (W / r.width);
+  mouse.y = (e.clientY - r.top) * (H / r.height);
+});
+
+// ================== КАМЕРА ==================
+const camera = { x: 0, y: 0 };
+
+function updateCamera() {
+  if (!player) return;
+  let tx = player.x - W / 2;
+  let ty = player.y - H / 2;
+  tx = Math.max(0, Math.min(MAP_W - W, tx));
+  ty = Math.max(0, Math.min(MAP_H - H, ty));
+  camera.x += (tx - camera.x) * 0.15;
+  camera.y += (ty - camera.y) * 0.15;
+}
+
+function screenToWorld(sx, sy) {
+  return { x: sx + camera.x, y: sy + camera.y };
+}
+
+// ================== КАРТА ==================
+function makeLevel() {
+  const walls = [];
+  walls.push({x:0, y:0, w:MAP_W, h:20});
+  walls.push({x:0, y:MAP_H-20, w:MAP_W, h:20});
+  walls.push({x:0, y:0, w:20, h:MAP_H});
+  walls.push({x:MAP_W-20, y:0, w:20, h:MAP_H});
+
+  const layout = [
+    // Верхняя левая зона
+    [200,100,30,300], [200,100,300,30], [500,100,30,200],
+    [100,400,250,30], [100,400,30,250],
+    [400,350,200,30], [500,250,30,250],
+    // Верхняя центральная зона
+    [700,100,30,350], [700,100,300,30], [900,100,30,250],
+    [800,300,30,200], [700,450,250,30],
+    // Верхняя правая зона
+    [1150,100,30,300], [1150,100,300,30], [1400,100,30,250],
+    [1250,400,250,30], [1500,100,30,350], [1500,400,280,30],
+    // Средняя левая
+    [100,650,300,30], [100,650,30,250], [300,700,30,300],
+    [400,650,250,30], [400,650,30,250], [400,850,250,30],
+    // Средняя центральная
+    [700,600,30,250], [700,600,300,30], [850,700,30,300],
+    [900,600,30,250], [700,900,300,30],
+    // Средняя правая
+    [1150,650,30,250], [1150,650,300,30], [1400,650,30,300],
+    [1250,850,300,30], [1500,650,30,250], [1500,850,280,30],
+    // Нижняя левая
+    [100,1000,250,30], [100,1000,30,180], [400,1000,30,150],
+    [500,1050,30,130], [700,1000,250,30],
+    // Нижняя центральная
+    [900,1000,30,180], [1000,1050,200,30],
+    [1100,950,30,200], [900,1100,250,30],
+    // Нижняя правая
+    [1300,1000,250,30], [1300,1000,30,180], [1500,1050,30,130],
+    [1550,1000,200,30], [1600,850,30,200],
+    // Колонны
+    [350,550,30,60], [600,500,60,30], [1000,450,60,30],
+    [1250,550,30,60], [1550,550,30,60], [350,800,60,30],
+    [600,800,30,60], [950,800,60,30], [1250,800,30,60],
+    [1700,700,30,200], [50,900,30,150], [1750,250,30,200],
+  ];
+  for (const [x,y,w,h] of layout) walls.push({x,y,w,h});
+  return walls;
+}
+let walls = makeLevel();
+
+function pointInWalls(x, y) {
+  for (const w of walls)
+    if (x >= w.x && x <= w.x + w.w && y >= w.y && y <= w.y + w.h) return true;
+  return false;
+}
+function circleCollides(x, y, r) {
+  return pointInWalls(x - r, y - r) || pointInWalls(x + r, y - r) ||
+         pointInWalls(x - r, y + r) || pointInWalls(x + r, y + r);
+}
+function lineBlocked(x1, y1, x2, y2) {
+  const dist = Math.hypot(x2 - x1, y2 - y1);
+  const steps = Math.max(2, Math.floor(dist / 8));
+  for (let i = 1; i < steps; i++) {
+    const t = i / steps;
+    if (pointInWalls(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t)) return true;
+  }
+  return false;
+}
+
+// ================== 🧹 СИСТЕМА ЧАСТИЦ (кровь + искры) ==================
+let blood = [];
+let lastParticleCleanup = performance.now();
+
+// Добавить частицу с меткой времени рождения
+function addBloodParticle(x, y, r, green = false) {
+  const now = performance.now();
+
+  // 🔒 Жёсткий лимит — если превышен, удаляем самые старые ПЕРЕД добавлением
+  if (blood.length >= BLOOD_MAX) {
+    blood.splice(0, Math.max(1, blood.length - BLOOD_MAX + 1));
+  }
+
+  blood.push({
+    x, y, r, green,
+    bornAt: now
+  });
+}
+
+// ⏱ Удаляет частицы старше BLOOD_LIFETIME (не чаще раза в 0.5 сек)
+function updateBloodParticles() {
+  const now = performance.now();
+  if (now - lastParticleCleanup < BLOOD_CLEANUP_INTERVAL) return;
+  lastParticleCleanup = now;
+
+  blood = blood.filter(b => {
+    const age = now - (b.bornAt || now);
+    return age < BLOOD_LIFETIME;
+  });
+}
+
+// 🎨 Возвращает alpha (0..1) — свежие 1.0, старые плавно к 0
+function bloodAlpha(b) {
+  const age = performance.now() - (b.bornAt || 0);
+  if (age < BLOOD_LIFETIME - BLOOD_FADE_TIME) return 1;
+  if (age > BLOOD_LIFETIME) return 0;
+  return 1 - (age - (BLOOD_LIFETIME - BLOOD_FADE_TIME)) / BLOOD_FADE_TIME;
+}
+
+// ================== 🎯 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ БЕЗОПАСНОГО СПАВНА ==================
+function findSafeSpawn(preferX, preferY, options = {}) {
+  const RADIUS = options.radius || 22;
+  const minDistFrom = options.minDistFrom || [];
+  const margin = options.margin || 50;
+
+  function isSafe(x, y) {
+    if (x < margin || x > MAP_W - margin) return false;
+    if (y < margin || y > MAP_H - margin) return false;
+    if (circleCollides(x, y, RADIUS)) return false;
+    for (const pt of minDistFrom) {
+      if (Math.hypot(x - pt.x, y - pt.y) < pt.dist) return false;
+    }
+    return true;
+  }
+
+  // 1) прямо в предпочтительной точке
+  if (isSafe(preferX, preferY)) {
+    return { x: preferX, y: preferY };
+  }
+
+  // 2) расширяющийся поиск вокруг желаемой
+  for (let step = 25; step <= 700; step += 25) {
+    const SAMPLES = 16;
+    for (let i = 0; i < SAMPLES; i++) {
+      const angle = (i / SAMPLES) * Math.PI * 2 + Math.random() * 0.4;
+      const x = preferX + Math.cos(angle) * step;
+      const y = preferY + Math.sin(angle) * step;
+      if (isSafe(x, y)) return { x, y };
+    }
+  }
+
+  // 3) поиск по всей карте
+  for (let tries = 0; tries < 3000; tries++) {
+    const x = margin + Math.random() * (MAP_W - margin * 2);
+    const y = margin + Math.random() * (MAP_H - margin * 2);
+    if (isSafe(x, y)) return { x, y };
+  }
+
+  // 4) fallback
+  return { x: MAP_W / 2, y: MAP_H / 2 };
+}
+
+// ================== 💊 АПТЕЧКИ ==================
+const MEDKIT_SPAWN_POINTS = [
+  {x: 100, y: 300},  {x: 600, y: 250},  {x: 1050, y: 350},
+  {x: 1350, y: 250}, {x: 1650, y: 300}, {x: 300, y: 800},
+  {x: 800, y: 750},  {x: 1100, y: 800},{x: 1450, y: 750},
+  {x: 250, y: 1100}, {x: 700, y: 1150},{x: 1050, y: 1100},
+  {x: 1350, y: 1100},{x: 1650, y: 1100},{x: 60, y: 700},
+  {x: 1750, y: 600}, {x: 1750, y: 100},{x: 60, y: 100},
+  {x: 950, y: 550},  {x: 1300, y: 600},{x: 550, y: 950},
+  {x: 900, y: 950},
+];
+
+const MEDKIT_INTERVAL = 5 * 60 * 1000;
+let medkitTimer = 0;
+
+class Medkit {
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+    this.r = 12;
+    this.taken = false;
+    this.bob = Math.random() * Math.PI * 2;
+    this.pulse = Math.random() * Math.PI * 2;
+    this.spawnAge = 0;
+  }
+  update() {
+    this.bob += 0.05;
+    this.pulse += 0.08;
+    if (this.spawnAge < 1) this.spawnAge = Math.min(1, this.spawnAge + 0.05);
+  }
+  draw(g) {
+    if (this.taken) return;
+    const scale = this.spawnAge;
+    const bobY = Math.sin(this.bob) * 3;
+    const cx = this.x;
+    const cy = this.y + bobY;
+
+    const pulseR = (22 + Math.sin(this.pulse) * 5) * scale;
+    const auraGrad = g.createRadialGradient(cx, cy, 0, cx, cy, pulseR);
+    auraGrad.addColorStop(0, `rgba(120, 255, 150, ${(0.30 + 0.15 * Math.sin(this.pulse)) * scale})`);
+    auraGrad.addColorStop(1, 'rgba(120, 255, 150, 0)');
+    g.fillStyle = auraGrad;
+    g.beginPath();
+    g.arc(cx, cy, pulseR, 0, Math.PI * 2);
+    g.fill();
+
+    g.fillStyle = `rgba(0,0,0,${0.6 * scale})`;
+    g.beginPath();
+    g.ellipse(cx, cy + 10, 10 * scale, 4 * scale, 0, 0, Math.PI * 2);
+    g.fill();
+
+    g.fillStyle = '#e8e8e8';
+    g.fillRect(cx - 10 * scale, cy - 8 * scale, 20 * scale, 16 * scale);
+    g.strokeStyle = '#888';
+    g.lineWidth = 1;
+    g.strokeRect(cx - 10 * scale, cy - 8 * scale, 20 * scale, 16 * scale);
+
+    g.fillStyle = '#d02020';
+    g.fillRect(cx - 2 * scale, cy - 6 * scale, 4 * scale, 12 * scale);
+    g.fillRect(cx - 6 * scale, cy - 2 * scale, 12 * scale, 4 * scale);
+
+    g.fillStyle = 'rgba(255,255,255,0.4)';
+    g.fillRect(cx - 8 * scale, cy - 7 * scale, 6 * scale, 3 * scale);
+  }
+}
+
+let medkits = [];
+
+function spawnOneMedkit() {
+  const shuffled = [...MEDKIT_SPAWN_POINTS].sort(() => Math.random() - 0.5);
+  for (const p of shuffled) {
+    const ox = p.x + (Math.random() - 0.5) * 60;
+    const oy = p.y + (Math.random() - 0.5) * 60;
+
+    const forbidden = [];
+    for (const m of medkits) {
+      if (m.taken) continue;
+      forbidden.push({ x: m.x, y: m.y, dist: 200 });
+    }
+    if (player) forbidden.push({ x: player.x, y: player.y, dist: 150 });
+    if (monster) forbidden.push({ x: monster.x, y: monster.y, dist: 200 });
+
+    const spot = findSafeSpawn(ox, oy, {
+      radius: 14,
+      minDistFrom: forbidden,
+      margin: 60
+    });
+
+    if (Math.abs(spot.x - MAP_W/2) < 5 && Math.abs(spot.y - MAP_H/2) < 5) {
+      continue;
+    }
+
+    medkits.push(new Medkit(spot.x, spot.y));
+    return true;
+  }
+  return false;
+}
+
+function spawnMedkits() {
+  medkits = [];
+  const count = 2 + Math.floor(Math.random() * 2);
+  let spawned = 0;
+  let attempts = 0;
+  while (spawned < count && attempts < 40) {
+    if (spawnOneMedkit()) spawned++;
+    attempts++;
+  }
+}
+
+function updateMedkitTimer(dt) {
+  medkitTimer += dt;
+  if (medkitTimer >= MEDKIT_INTERVAL) {
+    medkitTimer = 0;
+    const ok = spawnOneMedkit();
+    if (ok) {
+      pushLog(
+        '💊 Найдена новая аптечка!',
+        '[СПАВН] Ищи зелёное свечение',
+        '#5fd85f', 0
+      );
+    }
+  }
+}
+
+// ================== 🩸 БОЕВОЙ ЛОГ ==================
+let combatLog = [];
+const LOG_LIFETIME = 300;
+const LOG_MAX = 5;
+
+const BODY_PARTS = [
+  { name: 'рука',   txt: 'в руку',    mult: 0.7 },
+  { name: 'рука',   txt: 'в руку',    mult: 0.7 },
+  { name: 'нога',   txt: 'в ногу',    mult: 0.8 },
+  { name: 'нога',   txt: 'в ногу',    mult: 0.8 },
+  { name: 'торс',   txt: 'в корпус',  mult: 1.0 },
+  { name: 'торс',   txt: 'в корпус',  mult: 1.0 },
+  { name: 'живот',  txt: 'в живот',   mult: 1.15 },
+  { name: 'шея',    txt: 'в шею',     mult: 1.4 },
+  { name: 'голова', txt: 'в голову',  mult: 1.6 },
+  { name: 'спина',  txt: 'в спину',   mult: 1.1 },
+];
+
+function dangerLevel(dmg, part) {
+  const total = dmg * part.mult;
+  if (total >= 35) return 5;
+  if (total >= 25) return 4;
+  if (total >= 15) return 3;
+  if (total >= 8)  return 2;
+  return 1;
+}
+
+const DANGER = {
+  1: { color: '#7ec850', label: 'ЛЕГКО',      stars: '★☆☆☆☆' },
+  2: { color: '#e8d040', label: 'СРЕДНЕ',     stars: '★★☆☆☆' },
+  3: { color: '#ff9a20', label: 'ОПАСНО',     stars: '★★★☆☆' },
+  4: { color: '#ff4a2a', label: 'ТЯЖЕЛО',     stars: '★★★★☆' },
+  5: { color: '#ff1030', label: 'СМЕРТЕЛЬНО', stars: '★★★★★' },
+};
+
+function pushLog(text, sub, color, lvl = 0) {
+  combatLog.push({
+    text, sub, color, lvl,
+    life: LOG_LIFETIME,
+    maxLife: LOG_LIFETIME,
+  });
+  if (combatLog.length > LOG_MAX * 3) combatLog.shift();
+}
+
+function pushCombatLog(dmg, part, hpLeft) {
+  const lvl = dangerLevel(dmg, part);
+  const total = Math.round(dmg * part.mult);
+  const info = DANGER[lvl];
+  pushLog(
+    `Удар ${part.txt} — ${total} урона`,
+    `[${info.label}] ${info.stars}  ·  HP: ${Math.max(0, Math.round(hpLeft))}`,
+    info.color, lvl
+  );
+}
+
+function pushHealLog(healed, hp) {
+  pushLog(
+    `💊 Аптечка — +${healed} HP`,
+    `[ЛЕЧЕНИЕ] ♥  ·  HP: ${Math.round(hp)}`,
+    '#5fd85f', 0
+  );
+}
+
+function pushHealFullLog(hp) {
+  pushLog(
+    `💊 Аптечка (+0 HP — полное)`,
+    `[ЛЕЧЕНИЕ] ♥  ·  HP: ${Math.round(hp)}`,
+    '#88aa88', 0
+  );
+}
+
+function drawCombatLog() {
+  for (const e of combatLog) e.life--;
+  combatLog = combatLog.filter(e => e.life > 0);
+
+  const visible = combatLog.slice(-LOG_MAX);
+  if (visible.length === 0) return;
+
+  const baseY = H - 40;
+  const rowH = 44;
+  const x = W / 2;
+
+  ctx.save();
+  ctx.textAlign = 'center';
+
+  const padTop = baseY - (visible.length - 1) * rowH - 34;
+  const padH = visible.length * rowH + 20;
+  const padW = 520;
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  ctx.fillRect(x - padW/2, padTop, padW, padH);
+  ctx.strokeStyle = 'rgba(120,0,0,0.4)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(x - padW/2, padTop, padW, padH);
+
+  for (let i = 0; i < visible.length; i++) {
+    const e = visible[i];
+    const alpha = Math.min(1, e.life / 60);
+    const y = baseY - (visible.length - 1 - i) * rowH;
+    const spawnOffset = e.life > e.maxLife - 12
+      ? (e.life - (e.maxLife - 12)) * 2
+      : 0;
+
+    ctx.globalAlpha = alpha;
+
+    ctx.font = 'bold 18px Courier New';
+    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+    ctx.fillText(e.text, x + 1, y + 1 + spawnOffset);
+    ctx.fillStyle = e.color;
+    ctx.fillText(e.text, x, y + spawnOffset);
+
+    ctx.font = 'bold 12px Courier New';
+    ctx.fillStyle = 'rgba(255,255,255,0.7)';
+    ctx.fillText(e.sub, x, y + 15 + spawnOffset);
+
+    const barX = x - padW/2 + 6;
+    const barY = y - 14 + spawnOffset;
+    ctx.fillStyle = e.color;
+    ctx.fillRect(barX, barY, 4, 30);
+  }
+
+  ctx.restore();
+}
+
+// ================== СУЩНОСТИ ==================
+class Player {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.r = 14;
+    this.speed = 3.2;
+    this.angle = 0;
+    this.hp = 100;
+    this.maxHp = 100;
+    this.stamina = 100;
+    this.alive = true;
+    this.noise = 0;
+    this.hurtFlash = 0;
+    this.damageCd = 0;
+    this.medkitsPicked = 0;
+    this.healFlash = 0;
+  }
+  update() {
+    if (this.hurtFlash > 0) this.hurtFlash--;
+    if (this.damageCd > 0) this.damageCd--;
+    if (this.healFlash > 0) this.healFlash--;
+
+    let dx = 0, dy = 0;
+    const running = (keys['shift']) && this.stamina > 0;
+    const spd = this.speed * (running ? 1.8 : 1);
+
+    if (keys['w'] || keys['arrowup']) dy -= 1;
+    if (keys['s'] || keys['arrowdown']) dy += 1;
+    if (keys['a'] || keys['arrowleft']) dx -= 1;
+    if (keys['d'] || keys['arrowright']) dx += 1;
+
+    if (dx || dy) {
+      const len = Math.hypot(dx, dy);
+      dx = dx / len * spd; dy = dy / len * spd;
+      this.noise = running ? 1 : 0.4;
+    } else {
+      this.noise = 0;
+    }
+
+    if (running && (dx || dy)) this.stamina = Math.max(0, this.stamina - 0.7);
+    else this.stamina = Math.min(100, this.stamina + 0.4);
+
+    if (!circleCollides(this.x + dx, this.y, this.r)) this.x += dx;
+    if (!circleCollides(this.x, this.y + dy, this.r)) this.y += dy;
+
+    const mw = screenToWorld(mouse.x, mouse.y);
+    this.angle = Math.atan2(mw.y - this.y, mw.x - this.x);
+  }
+
+  takeDamage(rawDmg, part) {
+    if (this.damageCd > 0) return;
+    this.damageCd = 20;
+    const dmg = rawDmg * part.mult;
+    this.hp -= dmg;
+    this.hurtFlash = 15;
+
+    pushCombatLog(rawDmg, part, this.hp);
+
+    // 🩸 Брызги крови с временной меткой
+    for (let i = 0; i < 10 + dmg / 2; i++) {
+      const a = Math.random() * Math.PI * 2;
+      const r = 8 + Math.random() * (30 + dmg);
+      addBloodParticle(
+        this.x + Math.cos(a) * r,
+        this.y + Math.sin(a) * r,
+        3 + Math.random() * (4 + dmg / 5)
+      );
+    }
+
+    shake = Math.min(18, 6 + dmg * 0.5);
+    if (this.hp <= 0) this.alive = false;
+  }
+
+  heal(amount) {
+    const before = this.hp;
+    this.hp = Math.min(this.maxHp, this.hp + amount);
+    return Math.round(this.hp - before);
+  }
+
+  draw(g) {
+    if (this.hurtFlash > 0) {
+      g.fillStyle = `rgba(255,40,40,${this.hurtFlash / 30})`;
+      g.beginPath();
+      g.arc(this.x, this.y, this.r + 14, 0, Math.PI * 2);
+      g.fill();
+    }
+    if (this.healFlash > 0) {
+      g.fillStyle = `rgba(80,255,120,${this.healFlash / 30})`;
+      g.beginPath();
+      g.arc(this.x, this.y, this.r + 18, 0, Math.PI * 2);
+      g.fill();
+    }
+
+    g.fillStyle = 'rgba(0,0,0,0.6)';
+    g.beginPath();
+    g.arc(this.x, this.y + 3, this.r + 2, 0, Math.PI * 2);
+    g.fill();
+
+    const hpPct = this.hp / this.maxHp;
+    let bodyCol = '#c8beaa';
+    if (hpPct < 0.3) bodyCol = '#a86a5a';
+    else if (hpPct < 0.6) bodyCol = '#b89a88';
+    g.fillStyle = bodyCol;
+    g.beginPath();
+    g.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+    g.fill();
+
+    const ex = this.x + Math.cos(this.angle) * 5;
+    const ey = this.y + Math.sin(this.angle) * 5;
+    g.fillStyle = '#000';
+    g.beginPath(); g.arc(ex - 3, ey - 3, 2, 0, Math.PI * 2); g.fill();
+    g.beginPath(); g.arc(ex + 3, ey + 3, 2, 0, Math.PI * 2); g.fill();
+  }
+}
+
+class Monster {
+  constructor(x, y) {
+    this.x = x; this.y = y;
+    this.r = 16;
+    this.speed = 1.6;
+    this.angle = 0;
+    this.state = 'patrol';
+    this.target = { x, y };
+    this.attackCd = 0;
+    this.hearRange = 220;
+    this.seeRange = 320;
+    this.patrolTimer = 0;
+  }
+  canSee(p) {
+    const d = Math.hypot(p.x - this.x, p.y - this.y);
+    if (d > this.seeRange) return false;
+    return !lineBlocked(this.x, this.y, p.x, p.y);
+  }
+  update(p) {
+    if (!p.alive) return;
+    const dist = Math.hypot(p.x - this.x, p.y - this.y);
+    const sees = this.canSee(p);
+    const hears = dist < this.hearRange && p.noise > 0.5;
+
+    if (sees || hears) this.state = 'chase';
+    else if (this.state === 'chase' && dist > 400) this.state = 'patrol';
+
+    if (this.state === 'chase') {
+      const dx = p.x - this.x, dy = p.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.angle = Math.atan2(dy, dx);
+      const nx = this.x + dx / d * this.speed;
+      const ny = this.y + dy / d * this.speed;
+      if (!circleCollides(nx, this.y, this.r)) this.x = nx;
+      if (!circleCollides(this.x, ny, this.r)) this.y = ny;
+
+      if (dist < this.r + p.r + 4 && this.attackCd <= 0) {
+        this.attack(p);
+        this.attackCd = 45;
+      }
+    } else {
+      this.patrolTimer--;
+      if (this.patrolTimer <= 0 ||
+          Math.hypot(this.target.x - this.x, this.target.y - this.y) < 30) {
+
+        const spot = findSafeSpawn(
+          60 + Math.random() * (MAP_W - 120),
+          60 + Math.random() * (MAP_H - 120),
+          { radius: 20 }
+        );
+        this.target = spot;
+        this.patrolTimer = 300 + Math.floor(Math.random() * 300);
+      }
+
+      const dx = this.target.x - this.x, dy = this.target.y - this.y;
+      const d = Math.hypot(dx, dy) || 1;
+      this.angle = Math.atan2(dy, dx);
+      const nx = this.x + dx / d * this.speed * 0.4;
+      const ny = this.y + dy / d * this.speed * 0.4;
+      if (!circleCollides(nx, this.y, this.r)) this.x = nx;
+      if (!circleCollides(this.x, ny, this.r)) this.y = ny;
+
+      if (Math.hypot(this.x - (this.x + dx/d * 0.1), this.y - (this.y + dy/d * 0.1)) > 100) {
+        this.patrolTimer = 0;
+      }
+    }
+    if (this.attackCd > 0) this.attackCd--;
+  }
+
+  attack(p) {
+    const baseDmg = 8 + Math.random() * 8;
+    const part = BODY_PARTS[Math.floor(Math.random() * BODY_PARTS.length)];
+    p.takeDamage(baseDmg, part);
+
+    const dx = p.x - this.x, dy = p.y - this.y;
+    const d = Math.hypot(dx, dy) || 1;
+    const nx = p.x + dx / d * 25;
+    const ny = p.y + dy / d * 25;
+    if (!circleCollides(nx, p.y, p.r)) p.x = nx;
+    if (!circleCollides(p.x, ny, p.r)) p.y = ny;
+  }
+
+  draw(g) {
+    g.fillStyle = 'rgba(0,0,0,0.7)';
+    g.beginPath();
+    g.arc(this.x, this.y + 4, this.r + 4, 0, Math.PI * 2);
+    g.fill();
+
+    const col = this.state === 'chase' ? '#b41414' : '#781010';
+    g.fillStyle = col;
+    g.beginPath();
+    g.arc(this.x, this.y, this.r, 0, Math.PI * 2);
+    g.fill();
+
+    const ex = this.x + Math.cos(this.angle) * 6;
+    const ey = this.y + Math.sin(this.angle) * 6;
+    const perp = this.angle + Math.PI / 2;
+    g.fillStyle = '#ffdd00';
+    g.beginPath();
+    g.arc(ex + Math.cos(perp) * 4, ey + Math.sin(perp) * 4, 3, 0, Math.PI * 2);
+    g.fill();
+    g.beginPath();
+    g.arc(ex - Math.cos(perp) * 4, ey - Math.sin(perp) * 4, 3, 0, Math.PI * 2);
+    g.fill();
+  }
+}
+
+// ================== СОСТОЯНИЕ ==================
+let player, monster, shake, gameOver, deathTimer, msgTimer;
+let lastTime = performance.now();
+
+function reset() {
+  walls = makeLevel();
+
+  const playerSpawn = findSafeSpawn(120, 120, { radius: 18, margin: 60 });
+  player = new Player(playerSpawn.x, playerSpawn.y);
+
+  const monsterSpawn = findSafeSpawn(
+    Math.random() * MAP_W,
+    Math.random() * MAP_H,
+    {
+      radius: 22,
+      margin: 80,
+      minDistFrom: [{ x: player.x, y: player.y, dist: 500 }]
+    }
+  );
+  monster = new Monster(monsterSpawn.x, monsterSpawn.y);
+
+  blood = [];                    // 🧹 очищаем всю кровь
+  lastParticleCleanup = performance.now();
+  combatLog = [];
+  shake = 0;
+  gameOver = false;
+  deathTimer = 0;
+  msgTimer = 300;
+  medkitTimer = 0;
+  spawnMedkits();
+
+  camera.x = Math.max(0, Math.min(MAP_W - W, player.x - W / 2));
+  camera.y = Math.max(0, Math.min(MAP_H - H, player.y - H / 2));
+}
+reset();
+
+// ================== ФОНАРЬ ==================
+const darkCanvas = document.createElement('canvas');
+darkCanvas.width = W; darkCanvas.height = H;
+const dg = darkCanvas.getContext('2d');
+
+function drawDarkness() {
+  dg.clearRect(0, 0, W, H);
+  dg.fillStyle = 'rgba(0, 0, 0, 0.97)';
+  dg.fillRect(0, 0, W, H);
+
+  dg.globalCompositeOperation = 'destination-out';
+
+  const px = player.x - camera.x;
+  const py = player.y - camera.y;
+
+  const flashLen = 300;
+  const spread = Math.PI / 180 * 38;
+
+  const grad = dg.createRadialGradient(px, py, 10, px, py, flashLen);
+  grad.addColorStop(0, 'rgba(0,0,0,1)');
+  grad.addColorStop(0.7, 'rgba(0,0,0,0.85)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  dg.fillStyle = grad;
+  dg.beginPath();
+  dg.moveTo(px, py);
+  dg.arc(px, py, flashLen, player.angle - spread, player.angle + spread);
+  dg.closePath();
+  dg.fill();
+
+  const grad2 = dg.createRadialGradient(px, py, 0, px, py, 80);
+  grad2.addColorStop(0, 'rgba(0,0,0,1)');
+  grad2.addColorStop(1, 'rgba(0,0,0,0)');
+  dg.fillStyle = grad2;
+  dg.beginPath();
+  dg.arc(px, py, 80, 0, Math.PI * 2);
+  dg.fill();
+
+  for (const m of medkits) {
+    if (m.taken) continue;
+    const d = Math.hypot(m.x - player.x, m.y - player.y);
+    if (d < 220) {
+      const mx = m.x - camera.x;
+      const my = m.y - camera.y;
+      if (mx < -100 || mx > W + 100 || my < -100 || my > H + 100) continue;
+
+      const inten = 1 - d / 220;
+      const g = dg.createRadialGradient(mx, my, 0, mx, my, 70);
+      g.addColorStop(0, `rgba(0,0,0,${inten * 0.55})`);
+      g.addColorStop(1, 'rgba(0,0,0,0)');
+      dg.fillStyle = g;
+      dg.beginPath();
+      dg.arc(mx, my, 70, 0, Math.PI * 2);
+      dg.fill();
+    }
+  }
+
+  dg.globalCompositeOperation = 'source-over';
+  ctx.drawImage(darkCanvas, 0, 0);
+}
+
+// ================== ОТРИСОВКА ==================
+function draw() {
+  let ox = 0, oy = 0;
+  if (shake > 0) {
+    ox = (Math.random() - 0.5) * shake;
+    oy = (Math.random() - 0.5) * shake;
+    shake *= 0.9;
+    if (shake < 0.3) shake = 0;
+  }
+
+  ctx.save();
+  ctx.translate(ox - camera.x, oy - camera.y);
+
+  ctx.fillStyle = '#0a0810';
+  ctx.fillRect(0, 0, MAP_W, MAP_H);
+
+  // Сетка пола
+  ctx.strokeStyle = '#12101a';
+  ctx.lineWidth = 1;
+  const startX = Math.floor((camera.x - 60) / 60) * 60;
+  const endX = camera.x + W + 60;
+  const startY = Math.floor((camera.y - 60) / 60) * 60;
+  const endY = camera.y + H + 60;
+
+  for (let x = startX; x < endX; x += 60) {
+    if (x < 0 || x > MAP_W) continue;
+    ctx.beginPath();
+    ctx.moveTo(x, Math.max(0, camera.y - 60));
+    ctx.lineTo(x, Math.min(MAP_H, camera.y + H + 60));
+    ctx.stroke();
+  }
+  for (let y = startY; y < endY; y += 60) {
+    if (y < 0 || y > MAP_H) continue;
+    ctx.beginPath();
+    ctx.moveTo(Math.max(0, camera.x - 60), y);
+    ctx.lineTo(Math.min(MAP_W, camera.x + W + 60), y);
+    ctx.stroke();
+  }
+
+  // 🧹 Кровь с учётом alpha (затухание)
+  for (const b of blood) {
+    if (b.x < camera.x - 50 || b.x > camera.x + W + 50) continue;
+    if (b.y < camera.y - 50 || b.y > camera.y + H + 50) continue;
+
+    const a = bloodAlpha(b);
+    if (a <= 0) continue;
+
+    if (b.green) {
+      ctx.fillStyle = `rgba(80, 220, 100, ${0.7 * a})`;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+    } else {
+      ctx.fillStyle = `rgba(80, 0, 0, ${a})`;
+      ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = `rgba(140, 0, 0, ${a})`;
+      ctx.beginPath(); ctx.arc(b.x, b.y, Math.max(1, b.r - 2), 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  // Аптечки
+  for (const m of medkits) {
+    if (m.taken) continue;
+    if (m.x < camera.x - 50 || m.x > camera.x + W + 50) continue;
+    if (m.y < camera.y - 50 || m.y > camera.y + H + 50) continue;
+    m.draw(ctx);
+  }
+
+  // Стены
+  for (const w of walls) {
+    if (w.x + w.w < camera.x - 50) continue;
+    if (w.x > camera.x + W + 50) continue;
+    if (w.y + w.h < camera.y - 50) continue;
+    if (w.y > camera.y + H + 50) continue;
+
+    ctx.fillStyle = '#231e28';
+    ctx.fillRect(w.x, w.y, w.w, w.h);
+    ctx.strokeStyle = '#372e3e';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(w.x + 1, w.y + 1, w.w - 2, w.h - 2);
+  }
+
+  monster.draw(ctx);
+  if (player.alive) player.draw(ctx);
+
+  ctx.restore();
+
+  if (!gameOver) {
+    ctx.save();
+    ctx.translate(ox, oy);
+    drawDarkness();
+    ctx.restore();
+  } else {
+    const alpha = Math.min(0.85, deathTimer / 200);
+    ctx.fillStyle = `rgba(20, 0, 0, ${alpha})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // Винъетка
+  const vig = ctx.createRadialGradient(W/2, H/2, H * 0.35, W/2, H/2, H * 0.85);
+  vig.addColorStop(0, 'rgba(0,0,0,0)');
+  vig.addColorStop(1, 'rgba(0,0,0,0.85)');
+  ctx.fillStyle = vig;
+  ctx.fillRect(0, 0, W, H);
+
+  if (player && player.alive) {
+    const hpPct = player.hp / player.maxHp;
+    if (hpPct < 0.35) {
+      const pulse = 0.15 + 0.25 * Math.sin(performance.now() / 250);
+      const rg = ctx.createRadialGradient(W/2, H/2, H * 0.3, W/2, H/2, H * 0.9);
+      rg.addColorStop(0, 'rgba(255,0,0,0)');
+      rg.addColorStop(1, `rgba(255,0,0,${pulse * (1 - hpPct / 0.35)})`);
+      ctx.fillStyle = rg;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+}
+
+// ================== 🗺️ МИНИ-КАРТА ==================
+function drawMinimap() {
+  const mw = 180, mh = 120;
+  const mx = W - mw - 20;
+  const my = H - mh - 20;
+  const scaleX = mw / MAP_W;
+  const scaleY = mh / MAP_H;
+
+  ctx.save();
+
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+  ctx.fillRect(mx, my, mw, mh);
+  ctx.strokeStyle = '#444';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(mx, my, mw, mh);
+
+  ctx.fillStyle = 'rgba(80, 70, 90, 0.6)';
+  for (const w of walls) {
+    ctx.fillRect(mx + w.x * scaleX, my + w.y * scaleY,
+                 Math.max(1, w.w * scaleX), Math.max(1, w.h * scaleY));
+  }
+
+  for (const m of medkits) {
+    if (m.taken) continue;
+    ctx.fillStyle = '#5fd85f';
+    ctx.beginPath();
+    ctx.arc(mx + m.x * scaleX, my + m.y * scaleY, 3, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = '#ff2020';
+  ctx.beginPath();
+  ctx.arc(mx + monster.x * scaleX, my + monster.y * scaleY, 3, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.fillStyle = '#fff';
+  ctx.beginPath();
+  ctx.arc(mx + player.x * scaleX, my + player.y * scaleY, 4, 0, Math.PI * 2);
+  ctx.fill();
+
+  ctx.strokeStyle = 'rgba(255, 255, 255, 0.3)';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(mx + camera.x * scaleX, my + camera.y * scaleY,
+                 W * scaleX, H * scaleY);
+
+  ctx.fillStyle = 'rgba(180, 180, 180, 0.7)';
+  ctx.font = 'bold 10px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText('КАРТА', mx + 4, my - 4);
+
+  ctx.restore();
+}
+
+// ================== HUD ==================
+function drawHUD() {
+  if (gameOver) return;
+
+  const barW = 260, barH = 24;
+  const x = 20, y = H - 50;
+
+  ctx.fillStyle = '#280000';
+  ctx.fillRect(x, y, barW, barH);
+
+  const hpPct = Math.max(0, player.hp) / player.maxHp;
+  let hpCol = '#c81e1e';
+  if (hpPct < 0.25) hpCol = '#ff1818';
+  else if (hpPct < 0.5) hpCol = '#e06020';
+
+  ctx.fillStyle = hpCol;
+  ctx.fillRect(x, y, barW * hpPct, barH);
+  ctx.strokeStyle = '#666';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, barW, barH);
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px Courier New';
+  ctx.textAlign = 'left';
+  ctx.fillText(`HP: ${Math.max(0, Math.floor(player.hp))} / ${player.maxHp}`, x + 8, y + 17);
+
+  if (hpPct < 0.25 && Math.floor(performance.now() / 300) % 2 === 0) {
+    ctx.strokeStyle = '#ff2020';
+    ctx.lineWidth = 3;
+    ctx.strokeRect(x - 2, y - 2, barW + 4, barH + 4);
+  }
+
+  const y2 = y - 26;
+  ctx.fillStyle = '#282800';
+  ctx.fillRect(x, y2, barW, 16);
+  ctx.fillStyle = '#b4b43c';
+  ctx.fillRect(x, y2, barW * player.stamina / 100, 16);
+  ctx.strokeStyle = '#666';
+  ctx.strokeRect(x, y2, barW, 16);
+
+  ctx.save();
+  ctx.textAlign = 'right';
+  ctx.font = 'bold 18px Courier New';
+  ctx.fillStyle = player.medkitsPicked > 0 ? '#8effa0' : 'rgba(140,180,140,0.5)';
+  ctx.fillText(`💊 Подобрано: ${player.medkitsPicked}`, W - 20, 30);
+
+  const remainSec = Math.max(0, Math.ceil((MEDKIT_INTERVAL - medkitTimer) / 1000));
+  const mm = Math.floor(remainSec / 60);
+  const ss = remainSec % 60;
+  ctx.font = 'bold 12px Courier New';
+  ctx.fillStyle = 'rgba(140, 180, 140, 0.6)';
+  ctx.fillText(`⏱ Следующая аптечка: ${mm}:${ss.toString().padStart(2, '0')}`, W - 20, 50);
+
+  // 🧹 Счётчик частиц (можно убрать потом)
+  ctx.fillStyle = 'rgba(120, 80, 80, 0.5)';
+  ctx.font = 'bold 10px Courier New';
+  ctx.fillText(`частиц: ${blood.length}/${BLOOD_MAX}`, W - 20, 68);
+  ctx.restore();
+
+  if (msgTimer > 200) {
+    ctx.save();
+    ctx.fillStyle = '#c81e1e';
+    ctx.font = 'bold 64px Courier New';
+    ctx.textAlign = 'center';
+    ctx.shadowColor = '#ff0000';
+    ctx.shadowBlur = 30;
+    ctx.fillText('НЕ ОГЛЯДЫВАЙСЯ', W/2, 130);
+    ctx.restore();
+  }
+
+  if (msgTimer > 0 && !gameOver) {
+    msgTimer--;
+    ctx.save();
+    ctx.globalAlpha = Math.min(1, msgTimer / 80);
+    ctx.fillStyle = '#888';
+    ctx.font = '16px Courier New';
+    ctx.textAlign = 'center';
+    ctx.fillText('💊 Аптечки спавнятся каждые 5 минут · Кровь исчезает через 1 минуту',
+                 W/2, H - 100);
+    ctx.restore();
+  }
+}
+
+function drawDeath() {
+  deathTimer++;
+  const a = Math.min(0.75, deathTimer / 120);
+  ctx.fillStyle = `rgba(80, 0, 0, ${a})`;
+  ctx.fillRect(0, 0, W, H);
+
+  ctx.save();
+  ctx.textAlign = 'center';
+  ctx.fillStyle = '#dc2828';
+  ctx.font = 'bold 72px Courier New';
+  ctx.shadowColor = '#ff0000';
+  ctx.shadowBlur = 40;
+  ctx.fillText('ТЫ МЁРТВ', W/2, H/2 - 80);
+
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#b4aaa0';
+  ctx.font = 'bold 20px Courier New';
+  ctx.fillText(`Подобрано аптечек: ${player.medkitsPicked}`, W/2, H/2 - 10);
+
+  ctx.fillStyle = '#888';
+  ctx.font = 'bold 22px Courier New';
+  ctx.fillText('Нажми R чтобы попробовать снова', W/2, H/2 + 50);
+  ctx.restore();
+}
+
+// ================== 💊 ПОДБОР АПТЕЧЕК ==================
+function checkMedkitPickup() {
+  if (!player.alive) return;
+
+  for (const m of medkits) {
+    if (m.taken) continue;
+    const d = Math.hypot(m.x - player.x, m.y - player.y);
+    if (d < player.r + m.r) {
+      m.taken = true;
+      player.medkitsPicked++;
+      player.healFlash = 15;
+
+      const healed = player.heal(30);
+
+      if (healed > 0) {
+        pushHealLog(healed, player.hp);
+      } else {
+        pushHealFullLog(player.hp);
+      }
+
+      // 💊 Зелёные искры с временной меткой
+      for (let i = 0; i < 20; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 5 + Math.random() * 35;
+        addBloodParticle(
+          m.x + Math.cos(a) * r,
+          m.y + Math.sin(a) * r,
+          2 + Math.random() * 4,
+          true
+        );
+      }
+    }
+  }
+}
+
+// ================== ИГРОВОЙ ЦИКЛ ==================
+function loop() {
+  const now = performance.now();
+  const dt = now - lastTime;
+  lastTime = now;
+
+  if (!gameOver) {
+    // 🧹 Чистим старую кровь/искры
+    updateBloodParticles();
+
+    player.update();
+    monster.update(player);
+
+    updateCamera();
+
+    for (const m of medkits) m.update();
+
+    updateMedkitTimer(dt);
+
+    checkMedkitPickup();
+
+    if (!player.alive) {
+      gameOver = true;
+      deathTimer = 0;
+      // Лужа при смерти
+      for (let i = 0; i < 60; i++) {
+        const a = Math.random() * Math.PI * 2;
+        const r = 10 + Math.random() * 120;
+        addBloodParticle(
+          player.x + Math.cos(a) * r,
+          player.y + Math.sin(a) * r,
+          4 + Math.random() * 10
+        );
+      }
+    }
+
+    if (player.hp < 50 && Math.random() < 0.05) shake = 2;
+  }
+
+  draw();
+  drawHUD();
+  drawMinimap();
+  drawCombatLog();
+  if (gameOver) drawDeath();
+
+  requestAnimationFrame(loop);
+}
+loop();
+</script>
+</body>
+</html>
