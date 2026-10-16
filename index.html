@@ -32,7 +32,7 @@
 </head>
 <body>
 <canvas id="game"></canvas>
-<div id="hint">WASD — движение · SHIFT — бег · МЫШЬ — фонарь · R — рестарт</div>
+<div id="hint">WASD — движение · МЫШЬ — фонарь · R — рестарт</div>
 
 <script>
 // ================== НАСТРОЙКИ ==================
@@ -40,10 +40,10 @@ const MAP_W = 1800, MAP_H = 1200;
 const W = 1000, H = 700;
 
 // 🧹 Параметры автоочистки частиц
-const BLOOD_LIFETIME = 60 * 1000;    // ⏱ 60 секунд — жизнь частицы
-const BLOOD_FADE_TIME = 10 * 1000;   // ⏱ последние 10 сек — плавное затухание
-const BLOOD_MAX = 400;               // 🔒 максимум частиц одновременно
-const BLOOD_CLEANUP_INTERVAL = 500;  // ⚡ чистим не чаще раза в 0.5 сек
+const BLOOD_LIFETIME = 60 * 1000;
+const BLOOD_FADE_TIME = 10 * 1000;
+const BLOOD_MAX = 400;
+const BLOOD_CLEANUP_INTERVAL = 500;
 
 const canvas = document.getElementById('game');
 const ctx = canvas.getContext('2d');
@@ -99,35 +99,25 @@ function makeLevel() {
   walls.push({x:MAP_W-20, y:0, w:20, h:MAP_H});
 
   const layout = [
-    // Верхняя левая зона
     [200,100,30,300], [200,100,300,30], [500,100,30,200],
     [100,400,250,30], [100,400,30,250],
     [400,350,200,30], [500,250,30,250],
-    // Верхняя центральная зона
     [700,100,30,350], [700,100,300,30], [900,100,30,250],
     [800,300,30,200], [700,450,250,30],
-    // Верхняя правая зона
     [1150,100,30,300], [1150,100,300,30], [1400,100,30,250],
     [1250,400,250,30], [1500,100,30,350], [1500,400,280,30],
-    // Средняя левая
     [100,650,300,30], [100,650,30,250], [300,700,30,300],
     [400,650,250,30], [400,650,30,250], [400,850,250,30],
-    // Средняя центральная
     [700,600,30,250], [700,600,300,30], [850,700,30,300],
     [900,600,30,250], [700,900,300,30],
-    // Средняя правая
     [1150,650,30,250], [1150,650,300,30], [1400,650,30,300],
     [1250,850,300,30], [1500,650,30,250], [1500,850,280,30],
-    // Нижняя левая
     [100,1000,250,30], [100,1000,30,180], [400,1000,30,150],
     [500,1050,30,130], [700,1000,250,30],
-    // Нижняя центральная
     [900,1000,30,180], [1000,1050,200,30],
     [1100,950,30,200], [900,1100,250,30],
-    // Нижняя правая
     [1300,1000,250,30], [1300,1000,30,180], [1500,1050,30,130],
     [1550,1000,200,30], [1600,850,30,200],
-    // Колонны
     [350,550,30,60], [600,500,60,30], [1000,450,60,30],
     [1250,550,30,60], [1550,550,30,60], [350,800,60,30],
     [600,800,30,60], [950,800,60,30], [1250,800,30,60],
@@ -157,38 +147,28 @@ function lineBlocked(x1, y1, x2, y2) {
   return false;
 }
 
-// ================== 🧹 СИСТЕМА ЧАСТИЦ (кровь + искры) ==================
+// ================== 🧹 СИСТЕМА ЧАСТИЦ ==================
 let blood = [];
 let lastParticleCleanup = performance.now();
 
-// Добавить частицу с меткой времени рождения
 function addBloodParticle(x, y, r, green = false) {
   const now = performance.now();
-
-  // 🔒 Жёсткий лимит — если превышен, удаляем самые старые ПЕРЕД добавлением
   if (blood.length >= BLOOD_MAX) {
     blood.splice(0, Math.max(1, blood.length - BLOOD_MAX + 1));
   }
-
-  blood.push({
-    x, y, r, green,
-    bornAt: now
-  });
+  blood.push({ x, y, r, green, bornAt: now });
 }
 
-// ⏱ Удаляет частицы старше BLOOD_LIFETIME (не чаще раза в 0.5 сек)
 function updateBloodParticles() {
   const now = performance.now();
   if (now - lastParticleCleanup < BLOOD_CLEANUP_INTERVAL) return;
   lastParticleCleanup = now;
-
   blood = blood.filter(b => {
     const age = now - (b.bornAt || now);
     return age < BLOOD_LIFETIME;
   });
 }
 
-// 🎨 Возвращает alpha (0..1) — свежие 1.0, старые плавно к 0
 function bloodAlpha(b) {
   const age = performance.now() - (b.bornAt || 0);
   if (age < BLOOD_LIFETIME - BLOOD_FADE_TIME) return 1;
@@ -196,7 +176,7 @@ function bloodAlpha(b) {
   return 1 - (age - (BLOOD_LIFETIME - BLOOD_FADE_TIME)) / BLOOD_FADE_TIME;
 }
 
-// ================== 🎯 УНИВЕРСАЛЬНАЯ ФУНКЦИЯ БЕЗОПАСНОГО СПАВНА ==================
+// ================== 🎯 БЕЗОПАСНЫЙ СПАВН ==================
 function findSafeSpawn(preferX, preferY, options = {}) {
   const RADIUS = options.radius || 22;
   const minDistFrom = options.minDistFrom || [];
@@ -212,30 +192,23 @@ function findSafeSpawn(preferX, preferY, options = {}) {
     return true;
   }
 
-  // 1) прямо в предпочтительной точке
-  if (isSafe(preferX, preferY)) {
-    return { x: preferX, y: preferY };
-  }
+  if (isSafe(preferX, preferY)) return { x: preferX, y: preferY };
 
-  // 2) расширяющийся поиск вокруг желаемой
   for (let step = 25; step <= 700; step += 25) {
-    const SAMPLES = 16;
-    for (let i = 0; i < SAMPLES; i++) {
-      const angle = (i / SAMPLES) * Math.PI * 2 + Math.random() * 0.4;
+    for (let i = 0; i < 16; i++) {
+      const angle = (i / 16) * Math.PI * 2 + Math.random() * 0.4;
       const x = preferX + Math.cos(angle) * step;
       const y = preferY + Math.sin(angle) * step;
       if (isSafe(x, y)) return { x, y };
     }
   }
 
-  // 3) поиск по всей карте
   for (let tries = 0; tries < 3000; tries++) {
     const x = margin + Math.random() * (MAP_W - margin * 2);
     const y = margin + Math.random() * (MAP_H - margin * 2);
     if (isSafe(x, y)) return { x, y };
   }
 
-  // 4) fallback
   return { x: MAP_W / 2, y: MAP_H / 2 };
 }
 
@@ -327,9 +300,7 @@ function spawnOneMedkit() {
       margin: 60
     });
 
-    if (Math.abs(spot.x - MAP_W/2) < 5 && Math.abs(spot.y - MAP_H/2) < 5) {
-      continue;
-    }
+    if (Math.abs(spot.x - MAP_W/2) < 5 && Math.abs(spot.y - MAP_H/2) < 5) continue;
 
     medkits.push(new Medkit(spot.x, spot.y));
     return true;
@@ -495,7 +466,6 @@ class Player {
     this.angle = 0;
     this.hp = 100;
     this.maxHp = 100;
-    this.stamina = 100;
     this.alive = true;
     this.noise = 0;
     this.hurtFlash = 0;
@@ -509,8 +479,7 @@ class Player {
     if (this.healFlash > 0) this.healFlash--;
 
     let dx = 0, dy = 0;
-    const running = (keys['shift']) && this.stamina > 0;
-    const spd = this.speed * (running ? 1.8 : 1);
+    const spd = this.speed;   // ← всегда одна скорость, бега нет
 
     if (keys['w'] || keys['arrowup']) dy -= 1;
     if (keys['s'] || keys['arrowdown']) dy += 1;
@@ -520,13 +489,10 @@ class Player {
     if (dx || dy) {
       const len = Math.hypot(dx, dy);
       dx = dx / len * spd; dy = dy / len * spd;
-      this.noise = running ? 1 : 0.4;
+      this.noise = 0.4;   // ← всегда один уровень шума (бега нет)
     } else {
       this.noise = 0;
     }
-
-    if (running && (dx || dy)) this.stamina = Math.max(0, this.stamina - 0.7);
-    else this.stamina = Math.min(100, this.stamina + 0.4);
 
     if (!circleCollides(this.x + dx, this.y, this.r)) this.x += dx;
     if (!circleCollides(this.x, this.y + dy, this.r)) this.y += dy;
@@ -544,7 +510,6 @@ class Player {
 
     pushCombatLog(rawDmg, part, this.hp);
 
-    // 🩸 Брызги крови с временной меткой
     for (let i = 0; i < 10 + dmg / 2; i++) {
       const a = Math.random() * Math.PI * 2;
       const r = 8 + Math.random() * (30 + dmg);
@@ -623,7 +588,8 @@ class Monster {
     if (!p.alive) return;
     const dist = Math.hypot(p.x - this.x, p.y - this.y);
     const sees = this.canSee(p);
-    const hears = dist < this.hearRange && p.noise > 0.5;
+    // Порог шума теперь 0.3 — игрок всегда «шумит» при движении
+    const hears = dist < this.hearRange && p.noise > 0.3;
 
     if (sees || hears) this.state = 'chase';
     else if (this.state === 'chase' && dist > 400) this.state = 'patrol';
@@ -662,10 +628,6 @@ class Monster {
       const ny = this.y + dy / d * this.speed * 0.4;
       if (!circleCollides(nx, this.y, this.r)) this.x = nx;
       if (!circleCollides(this.x, ny, this.r)) this.y = ny;
-
-      if (Math.hypot(this.x - (this.x + dx/d * 0.1), this.y - (this.y + dy/d * 0.1)) > 100) {
-        this.patrolTimer = 0;
-      }
     }
     if (this.attackCd > 0) this.attackCd--;
   }
@@ -729,7 +691,7 @@ function reset() {
   );
   monster = new Monster(monsterSpawn.x, monsterSpawn.y);
 
-  blood = [];                    // 🧹 очищаем всю кровь
+  blood = [];
   lastParticleCleanup = performance.now();
   combatLog = [];
   shake = 0;
@@ -821,7 +783,6 @@ function draw() {
   ctx.fillStyle = '#0a0810';
   ctx.fillRect(0, 0, MAP_W, MAP_H);
 
-  // Сетка пола
   ctx.strokeStyle = '#12101a';
   ctx.lineWidth = 1;
   const startX = Math.floor((camera.x - 60) / 60) * 60;
@@ -844,7 +805,6 @@ function draw() {
     ctx.stroke();
   }
 
-  // 🧹 Кровь с учётом alpha (затухание)
   for (const b of blood) {
     if (b.x < camera.x - 50 || b.x > camera.x + W + 50) continue;
     if (b.y < camera.y - 50 || b.y > camera.y + H + 50) continue;
@@ -863,7 +823,6 @@ function draw() {
     }
   }
 
-  // Аптечки
   for (const m of medkits) {
     if (m.taken) continue;
     if (m.x < camera.x - 50 || m.x > camera.x + W + 50) continue;
@@ -871,7 +830,6 @@ function draw() {
     m.draw(ctx);
   }
 
-  // Стены
   for (const w of walls) {
     if (w.x + w.w < camera.x - 50) continue;
     if (w.x > camera.x + W + 50) continue;
@@ -901,7 +859,6 @@ function draw() {
     ctx.fillRect(0, 0, W, H);
   }
 
-  // Винъетка
   const vig = ctx.createRadialGradient(W/2, H/2, H * 0.35, W/2, H/2, H * 0.85);
   vig.addColorStop(0, 'rgba(0,0,0,0)');
   vig.addColorStop(1, 'rgba(0,0,0,0.85)');
@@ -1006,13 +963,7 @@ function drawHUD() {
     ctx.strokeRect(x - 2, y - 2, barW + 4, barH + 4);
   }
 
-  const y2 = y - 26;
-  ctx.fillStyle = '#282800';
-  ctx.fillRect(x, y2, barW, 16);
-  ctx.fillStyle = '#b4b43c';
-  ctx.fillRect(x, y2, barW * player.stamina / 100, 16);
-  ctx.strokeStyle = '#666';
-  ctx.strokeRect(x, y2, barW, 16);
+  // ⛔ ПОЛОСА СТАМИНЫ УБРАНА
 
   ctx.save();
   ctx.textAlign = 'right';
@@ -1027,7 +978,6 @@ function drawHUD() {
   ctx.fillStyle = 'rgba(140, 180, 140, 0.6)';
   ctx.fillText(`⏱ Следующая аптечка: ${mm}:${ss.toString().padStart(2, '0')}`, W - 20, 50);
 
-  // 🧹 Счётчик частиц (можно убрать потом)
   ctx.fillStyle = 'rgba(120, 80, 80, 0.5)';
   ctx.font = 'bold 10px Courier New';
   ctx.fillText(`частиц: ${blood.length}/${BLOOD_MAX}`, W - 20, 68);
@@ -1102,7 +1052,6 @@ function checkMedkitPickup() {
         pushHealFullLog(player.hp);
       }
 
-      // 💊 Зелёные искры с временной меткой
       for (let i = 0; i < 20; i++) {
         const a = Math.random() * Math.PI * 2;
         const r = 5 + Math.random() * 35;
@@ -1124,7 +1073,6 @@ function loop() {
   lastTime = now;
 
   if (!gameOver) {
-    // 🧹 Чистим старую кровь/искры
     updateBloodParticles();
 
     player.update();
@@ -1141,7 +1089,6 @@ function loop() {
     if (!player.alive) {
       gameOver = true;
       deathTimer = 0;
-      // Лужа при смерти
       for (let i = 0; i < 60; i++) {
         const a = Math.random() * Math.PI * 2;
         const r = 10 + Math.random() * 120;
